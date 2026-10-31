@@ -2,6 +2,8 @@
 
 📈 **A Statistical Arbitrage and Pairs Trading Engine**
 
+My First Project:
+
 This project is a high-performance quantitative trading engine built in modern C++. It utilizes statistical arbitrage (pairs trading) principles, moving away from discretionary trading towards data-driven, deterministic execution algorithms.
 
 ## 🚀 Core Concept
