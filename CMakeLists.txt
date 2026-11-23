@@ -16,4 +16,5 @@ add_executable(StatArb_Engine
         src/SignalEngine.cpp
         src/TradeFSM.cpp
         src/Backtester.cpp
+        src/CointegrationTester.cpp
 )
