@@ -2,6 +2,7 @@
 #include "OLSSolver.h"
 #include "SignalEngine.h"
 #include "CointegrationTester.h"
+#include "KalmanFilter.h"
 #include <iostream>
 #include <iomanip>
 #include <algorithm>
@@ -13,6 +14,29 @@ BacktestReport Backtester::runWalkForward(const std::vector<std::string>& dates,
                                          const RiskParams& risk_params,
                                          const BacktestConfig& config) {
     TradeFSM fsm(risk_params, config.initial_capital);
+
+    std::vector<double> log_x(x_prices.size());
+    std::vector<double> log_y(y_prices.size());
+    for (size_t idx = 0; idx < x_prices.size(); ++idx) {
+        log_x[idx] = std::log(x_prices[idx]);
+        log_y[idx] = std::log(y_prices[idx]);
+    }
+
+    KalmanFilter kf(config.kalman_delta, 1e-3);
+
+    // EWMA (30 bar) ile inovasyon ortalaması ve varyansı için ısınma (warmup)
+    const double ewma_alpha = 2.0 / (30.0 + 1.0);
+    double ewma_mean = 0.0;
+    double ewma_var = 1e-6;
+
+    for (size_t w = 0; w < config.ols_window && w < dates.size(); ++w) {
+        KalmanEstimate est = kf.update(log_x[w], log_y[w]);
+        if (w > 5) { // İlk 5 barlık başlangıç sıçramasını atla
+            double diff = est.spread - ewma_mean;
+            ewma_mean += ewma_alpha * diff;
+            ewma_var = (1.0 - ewma_alpha) * (ewma_var + ewma_alpha * diff * diff);
+        }
+    }
 
     double cash = config.initial_capital;
     double peak_equity = config.initial_capital;
@@ -27,6 +51,8 @@ BacktestReport Backtester::runWalkForward(const std::vector<std::string>& dates,
     int winning_trades = 0;
     int blocked_signals = 0;
 
+    const double round_trip_fee_pct = 2.0 * config.commission_rate;
+
     for (size_t i = config.ols_window; i < dates.size(); ++i) {
         double unrealized_pnl = 0.0;
         if (qty_y != 0.0) {
@@ -38,36 +64,30 @@ BacktestReport Backtester::runWalkForward(const std::vector<std::string>& dates,
         double dd = (peak_equity - current_equity) / peak_equity;
         max_drawdown = std::max(max_drawdown, dd);
 
-        std::vector<double> win_x(x_prices.begin() + (i - config.ols_window), x_prices.begin() + i);
-        std::vector<double> win_y(y_prices.begin() + (i - config.ols_window), y_prices.begin() + i);
+        // 1. Kalman güncellemesi ve gerçek inovasyon Z-skoru (Zero Look-Ahead)
+        KalmanEstimate est = kf.update(log_x[i], log_y[i]);
+        double innovation_std = std::sqrt(std::max(ewma_var, 1e-12));
+        double z_score = (est.spread - ewma_mean) / innovation_std;
 
-        OLSResult model = OLSSolver::fit(win_x, win_y);
-        std::vector<double> win_spread = SignalEngine::computeSpread(win_x, win_y, model.alpha, model.beta);
+        // EWMA istatistiklerini bir sonraki bar için güncelle
+        double diff = est.spread - ewma_mean;
+        ewma_mean += ewma_alpha * diff;
+        ewma_var = (1.0 - ewma_alpha) * (ewma_var + ewma_alpha * diff * diff);
 
-        // ADF ve Ornstein-Uhlenbeck Half-Life hesabı
+        // 2. Son ols_window bar üzerinden rejim (ADF & Half-Life) kontrolü
+        std::vector<double> win_lx(log_x.begin() + (i - config.ols_window), log_x.begin() + i);
+        std::vector<double> win_ly(log_y.begin() + (i - config.ols_window), log_y.begin() + i);
+        std::vector<double> win_spread = SignalEngine::computeSpread(win_lx, win_ly, est.alpha, est.beta);
+
         ADFResult adf = CointegrationTester::testADF(win_spread, 1);
 
-        // Dinamik Z-Skoru penceresi: Half-Life süresine eşit (min 5, max 30 gün)
-        size_t dynamic_z_win = static_cast<size_t>(std::clamp(std::round(adf.half_life), 5.0, 30.0));
-        size_t z_start = win_spread.size() - dynamic_z_win;
+        // Beklenen brüt getiri gidiş-dönüş komisyonunun en az 2 katı olmalı
+        double expected_move_pct = risk_params.entry_z * innovation_std;
+        bool clears_fee_hurdle = expected_move_pct >= (2.0 * round_trip_fee_pct);
 
-        double sum = 0.0;
-        for (size_t k = z_start; k < win_spread.size(); ++k) sum += win_spread[k];
-        double mean = sum / static_cast<double>(dynamic_z_win);
-
-        double sq_sum = 0.0;
-        for (size_t k = z_start; k < win_spread.size(); ++k) {
-            double diff = win_spread[k] - mean;
-            sq_sum += diff * diff;
-        }
-        double std_dev = std::sqrt(sq_sum / static_cast<double>(dynamic_z_win - 1));
-
-        double current_spread = y_prices[i] - (model.beta * x_prices[i] + model.alpha);
-        double z_score = (std_dev > 1e-12) ? (current_spread - mean) / std_dev : 0.0;
-
-        // Rejim geçerliliği: ADF eşiği + hızlı ortalamaya dönüş (Half-Life <= max_half_life) + pozitif Beta
-        bool regime_valid = (!config.enforce_adf || (adf.t_stat < config.adf_critical && adf.half_life > 1.0 && adf.half_life <= config.max_half_life))
-                            && (model.beta > 0.1);
+        bool regime_valid = (!config.enforce_adf || (adf.t_stat < config.adf_critical && adf.half_life > 2.0 && adf.half_life <= config.max_half_life))
+                            && (est.beta > 0.2)
+                            && clears_fee_hurdle;
 
         TradeAction action = fsm.onTick(z_score, current_equity);
 
@@ -80,32 +100,26 @@ BacktestReport Backtester::runWalkForward(const std::vector<std::string>& dates,
                 continue;
             }
 
-            // Pozisyona özel dinamik Time-Stop: 2.5 * Half-Life (min 10, max 45 gün)
-            int dynamic_time_stop = static_cast<int>(std::clamp(std::round(adf.half_life * 2.5), 10.0, 45.0));
+            int dynamic_time_stop = static_cast<int>(std::clamp(std::round(adf.half_life * 2.5), 12.0, 72.0));
             fsm.setMaxHoldingDays(dynamic_time_stop);
 
-            double unit_basket_cost = y_prices[i] + std::abs(model.beta) * x_prices[i];
-            double allocatable = cash * config.capital_usage;
-            double units = allocatable / unit_basket_cost;
+            double half_alloc = (cash * config.capital_usage * config.leverage) * 0.5;
+            double units_y = half_alloc / y_prices[i];
+            double units_x = (half_alloc * est.beta) / x_prices[i];
 
             entry_y = y_prices[i];
             entry_x = x_prices[i];
 
             if (action == TradeAction::ENTER_LONG_SPREAD) {
-                qty_y = units;
-                qty_x = -units * model.beta;
+                qty_y = units_y;
+                qty_x = -units_x;
             } else {
-                qty_y = -units;
-                qty_x = units * model.beta;
+                qty_y = -units_y;
+                qty_x = units_x;
             }
 
             double entry_fee = (std::abs(qty_y) * entry_y + std::abs(qty_x) * entry_x) * config.commission_rate;
             cash -= entry_fee;
-
-            if (config.verbose) {
-                std::cout << dates[i] << " | OPEN  | HL: " << adf.half_life << "d | "
-                          << TradeFSM::actionToString(action) << " | Fee: -$" << entry_fee << "\n";
-            }
         }
         else if ((action == TradeAction::EXIT_TAKE_PROFIT ||
                   action == TradeAction::EXIT_STOP_LOSS ||
@@ -119,11 +133,6 @@ BacktestReport Backtester::runWalkForward(const std::vector<std::string>& dates,
 
             total_trades++;
             if (net_trade_pnl > 0.0) winning_trades++;
-
-            if (config.verbose) {
-                std::cout << dates[i] << " | CLOSE | " << TradeFSM::actionToString(action)
-                          << " | Net PnL: $" << net_trade_pnl << " | Equity: $" << cash << "\n";
-            }
 
             qty_y = 0.0;
             qty_x = 0.0;

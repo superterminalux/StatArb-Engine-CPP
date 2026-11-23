@@ -17,4 +17,5 @@ add_executable(StatArb_Engine
         src/TradeFSM.cpp
         src/Backtester.cpp
         src/CointegrationTester.cpp
+        src/KalmanFilter.cpp
 )
