@@ -15,4 +15,5 @@ add_executable(StatArb_Engine
         src/OLSSolver.cpp
         src/SignalEngine.cpp
         src/TradeFSM.cpp
+        src/Backtester.cpp
 )

@@ -6,6 +6,7 @@
 #include "OLSSolver.h"
 #include "SignalEngine.h"
 #include "TradeFSM.h"
+#include "Backtester.h"
 
 int main() {
     std::vector<std::string> dates;
@@ -16,33 +17,34 @@ int main() {
         return 1;
     }
 
+    // 1. OLS Regresyonu
     OLSResult model = OLSSolver::fit(co_prices, pep_prices);
 
-    const size_t window = 5;
+    // 2. Spread ve Hareketli Z-Skoru
+    BacktestConfig config;
+    config.initial_capital = 10000.0;
+    config.warmup_window = 5;
+
     std::vector<double> spread = SignalEngine::computeSpread(co_prices, pep_prices, model.alpha, model.beta);
-    std::vector<double> z_scores = SignalEngine::computeRollingZScore(spread, window);
+    std::vector<double> z_scores = SignalEngine::computeRollingZScore(spread, config.warmup_window);
 
-    // Test için entry_z = 1.0 (10 günlük örnek veride sinyal tetiklenmesini görmek için)
-    RiskParams params{1.0, 0.2, 3.0, 0.10};
-    double virtual_equity = 10000.0;
-    TradeFSM fsm(params, virtual_equity);
+    // 3. Risk Parametreleri ve Backtest Çalıştırma
+    RiskParams risk{1.0, 0.2, 3.0, 0.10};
+    BacktestReport report = Backtester::run(dates, co_prices, pep_prices, z_scores, model.beta, risk, config);
 
-    std::cout << "[Phase 4] Finite State Machine Execution Log\n";
-    std::cout << std::fixed << std::setprecision(4);
-
-    for (size_t i = 0; i < dates.size(); ++i) {
-        // Isınma periyodunda (ilk window - 1 gün) işlem yapma
-        if (i < window - 1) {
-            std::cout << dates[i] << " | WARMUP | State: IDLE\n";
-            continue;
-        }
-
-        TradeAction action = fsm.onTick(z_scores[i], virtual_equity);
-        std::cout << dates[i]
-                  << " | Z: " << std::setw(7) << z_scores[i]
-                  << " | State: " << std::setw(12) << TradeFSM::stateToString(fsm.getState())
-                  << " | Action: " << TradeFSM::actionToString(action) << "\n";
-    }
+    // 4. Nihai Performans Özeti
+    std::cout << "\n========================================\n";
+    std::cout << "       STATARB ENGINE - SUMMARY         \n";
+    std::cout << "========================================\n";
+    std::cout << std::fixed << std::setprecision(2);
+    std::cout << "OLS Alpha / Beta  : " << model.alpha << " / " << model.beta << "\n";
+    std::cout << "Initial Capital   : $" << report.initial_capital << "\n";
+    std::cout << "Final Equity      : $" << report.final_equity << "\n";
+    std::cout << "Net PnL           : $" << report.total_pnl << " (" << report.return_pct << "%)\n";
+    std::cout << "Max Drawdown      : " << report.max_drawdown_pct << "%\n";
+    std::cout << "Completed Trades  : " << report.total_trades
+              << " (Wins: " << report.winning_trades << ")\n";
+    std::cout << "========================================\n";
 
     return 0;
 }
