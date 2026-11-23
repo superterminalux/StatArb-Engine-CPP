@@ -2,6 +2,7 @@
 #include <vector>
 #include <string>
 #include "DataLoader.h"
+#include "OLSSolver.h"
 
 int main() {
     std::vector<std::string> dates;
@@ -12,11 +13,11 @@ int main() {
         return 1;
     }
 
-    std::cout << "[Phase 1] Loaded " << dates.size() << " rows.\n";
-    for (size_t i = 0; i < dates.size(); ++i) {
-        std::cout << dates[i] << " -> CO: " << co_prices[i]
-                  << " | PEP: " << pep_prices[i] << "\n";
-    }
+    OLSResult model = OLSSolver::fit(co_prices, pep_prices);
+
+    std::cout << "[Phase 2] OLS Regression Completed (" << dates.size() << " observations)\n";
+    std::cout << "Alpha (Intercept)   : " << model.alpha << "\n";
+    std::cout << "Beta (Hedge Ratio)  : " << model.beta << "\n";
 
     return 0;
 }
