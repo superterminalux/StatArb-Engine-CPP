@@ -3,13 +3,18 @@
 
 #include <vector>
 #include <string>
+#include <cstddef>
 #include "TradeFSM.h"
 
 struct BacktestConfig {
-    double initial_capital = 10000.0; // Başlangıç sermayesi ($)
-    double capital_usage = 0.95;      // İşlem başına kullanılacak kasa oranı (%95)
-    double commission_rate = 0.0005;  // Bacak başına işlem komisyonu (%0.05)
-    size_t warmup_window = 5;         // Z-Skoru ısınma penceresi
+    double initial_capital = 10000.0;
+    double capital_usage = 0.95;
+    double commission_rate = 0.0005;
+    size_t ols_window = 120;
+    double adf_critical = -3.04;
+    double max_half_life = 20.0;
+    bool enforce_adf = true;
+    bool verbose = false;
 };
 
 struct BacktestReport {
@@ -20,17 +25,16 @@ struct BacktestReport {
     double max_drawdown_pct;
     int total_trades;
     int winning_trades;
+    int blocked_signals;
 };
 
 class Backtester {
 public:
-    static BacktestReport run(const std::vector<std::string>& dates,
-                              const std::vector<double>& x_prices,
-                              const std::vector<double>& y_prices,
-                              const std::vector<double>& z_scores,
-                              double beta,
-                              const RiskParams& risk_params,
-                              const BacktestConfig& config);
+    static BacktestReport runWalkForward(const std::vector<std::string>& dates,
+                                         const std::vector<double>& x_prices,
+                                         const std::vector<double>& y_prices,
+                                         const RiskParams& risk_params,
+                                         const BacktestConfig& config);
 };
 
 #endif // STATARB_ENGINE_BACKTESTER_H
