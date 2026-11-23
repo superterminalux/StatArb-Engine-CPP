@@ -13,4 +13,5 @@ add_executable(StatArb_Engine
         src/main.cpp
         src/DataLoader.cpp
         src/OLSSolver.cpp
+        src/SignalEngine.cpp
 )
